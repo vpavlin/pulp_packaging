@@ -1,5 +1,5 @@
 - job-template:
-    name: 'ci-{project}-{topology}-1-provision'
+    name: '{project}-{platform}-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -10,40 +10,40 @@
               - os1
             description: |
               Site where to provision resources
+        - string:
+            name: REPO
+            default: https://repos.fedorapeople.org/repos/pulp/pulp/testing/2.5/
+            description: |
+                The URL to the repository to install Pulp from.
+        - string:
+            name: TEST_SUITE_BRANCH
+            default: master
+            description: |
+                The git branch to use in the integration test suite, e.g. 'master', 'pulp-2.4', etc
     builders:
         - shell: |
             #!/bin/bash
 
-            cp -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
 
-            export JSLAVENAME={jslavename}
+            export JSLAVENAME={jslavename}-{platform}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
                 $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
                 --topology=ci-ops-central/project/config/aio_jslave --ssh_keyfile={ssh_keyfile} \
-                --jslavename={jslavename} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
+                --jslavename={jslavename}-{platform} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
                 --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
 
                 TR_STATUS=$?
                 if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
             fi
 
-            echo "PROVISIONING TEST RESOURCES"
-            # Provision Test Resources
-            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh --site=$SITE --project_defaults={project_defaults} \
-            --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} --name={project}
-
-            TR_STATUS=$?
-
             files=$(ls $WORKSPACE/*.slave 2>/dev/null)
             if [ -e "$files" ]
             then
                 cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
             fi
-
-            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
-
 
         - inject:
             properties-file: $WORKSPACE/RESOURCES.txt
@@ -53,12 +53,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{project}-{topology}-2-runtest'
+          - project: '{project}-{platform}-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: 'ci-{project}-{topology}-3-teardown'
+          - project: '{project}-{platform}-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -67,61 +67,69 @@
 
 
 - job-template:
-    name: '{project}-{topology}-2-runtest'
+    name: '{project}-{platform}-2-runtest'
     defaults: ci-workflow-runtest
-    node: '{jslavename}'
+    node: '{jslavename}-{platform}'
     builders:
         - copyartifact:
-            project: 'ci-{project}-{topology}-1-provision'
+            project: '{project}-{platform}-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
         - shell: |
             #!/bin/bash
 
-            cp -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
+            yum -y install python-pip PyYAML git
+            pip install fabric python-keystoneclient python-glanceclient python-novaclient
 
-            export TOPOLOGY={topology}
-            {testparams}
+            cd $WORKSPACE
+            git clone https://github.com/pulp/pulp.git
+            cd pulp/playpen/deploy/
+            # This is the private key for the OpenStack instances the script builds
+            cp -v $QEOS_CONFIG_ZIP/config/keys/pulp-ci-key.pem id_rsa
+            # This contains OpenStack credentials in a file of the following format:
+            #
+            # export OS_USERNAME=*username*
+            # export OS_PASSWORD=*password*
+            # export OS_AUTH_URL=*keystone auth URL*
+            # export OS_TENANT_NAME=*tenant name*
+            # export OS_TENANT_ID=*tenant id*
+            source $OS_CONFIG/qeos_credentials
 
-            echo "TOPOLOGY: {topology}"
+            # Run the tests against the specified platform
+            EXIT=0
+            python deploy-environment.py --config config/jenkins/{platform}-config.yml \
+            --deployed-config test.json --test-branch $TEST_SUITE_BRANCH --repo $REPO || EXIT=$?
+            python run-integration-tests.py --config test.json || EXIT=$?
+            python cleanup-environment.py --config test.json || EXIT=$?
 
-            echo "Ping Jenkins Slave"
-            ping -c 15 $JSLAVEIP
-
-            echo "Jenkins machine info we are running on"
-            ifconfig
-
-            echo "Pinging Test Resources"
-            echo $EXISTING_NODES | xargs -i -d , ping -c 30 {{}}
-            cat $WORKSPACE/RESOURCES.txt
+            cp -r test $WORKSPACE/test
+            rm -rf $WORKSPACE/pulp
 
     publishers:
+      # Publish a pretty graph of the test results
+      - junit:
+          results: $WORKSPACE/test/*.xml
+          keep-long-stdio: true
+          test-stability: true
+      # Archive the test results
       - archive:
-          artifacts: '**/**'
+          artifacts: 'test/**'
           allow-empty: 'true'
+      # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: 'ci-{project}-{topology}-3-teardown'
+          - project: '{project}-{platform}-3-teardown'
             current-parameters: true
       - default-ci-workflow-publishers
 
 - job-template:
-    name: 'ci-{project}-{topology}-3-teardown'
+    name: '{project}-{platform}-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
         - shell: |
             #!/bin/bash
-
-            cp -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
-
             export JSLAVETEARDOWN={jslaveteardown}
-            # Teardown Jenkins Slave
-            $WORKSPACE/ci-ops-central/bootstrap/teardown_resources.sh --site=$SITE --project_defaults={project_defaults} \
-            --topology={topology_path}/{topology} --name=$LABEL
-
-            TR_STATUS=$?
-            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
 
             if [ "$JSLAVETEARDOWN" == "True" ]
             then
@@ -134,14 +142,14 @@
             fi
 
 - job-group:
-    name: ci-workflow-provision-runtest-teardown
+    name: '{platform}-integration-tests'
     jobs:
-      - 'ci-{project}-{topology}-1-provision'
-      - '{project}-{topology}-2-runtest'
-      - 'ci-{project}-{topology}-3-teardown'
+      - '{project}-{platform}-1-provision'
+      - '{project}-{platform}-2-runtest'
+      - '{project}-{platform}-3-teardown'
 
 - project:
-    name: ci-workflow-jobs
+    name: integration-jobs
     project:
      - workflow
     project_defaults:
@@ -150,20 +158,24 @@
      - pulp_packaging/ci/config
     topology:
      - integration-rhel6
+    platform:
+      - el5
+      - el6
+      - el7
+      - fc19
+      - fc20
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
-    testparams:
-     - echo "I am a test parameter"
     jobs:
-      - ci-workflow-provision-runtest-teardown
+     - '{platform}-integration-tests'
     jslavename:
-     - jslave-integration-slave
+     - 'jslave-integration-slave'
     jslave_execs:
      - 10
     jslaveimage:
-     - rhel-6.5_jeos
+     - rhel-x86_64-7.0-20140915-jenkins
     jslaveflavor:
-     - m1.large
+     - m1.small
     jslaveusername:
      - root
     jslavepassword:
