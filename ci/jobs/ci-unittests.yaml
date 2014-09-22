@@ -1,5 +1,5 @@
 - job-template:
-    name: '{topology}-1-provision'
+    name: '{jslaveimage}-unittest-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -40,15 +40,16 @@
         - shell: |
             #!/bin/bash
 
-            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
-            export JSLAVENAME={topology}-{jslavename}
+            export JSLAVENAME={jslaveimage}-{jslavename}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
-                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
-                --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} \
-                --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
+                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults={project_defaults} \
+                --jslavename={jslavename_path}/{jslavename} --ssh_keyfile={ssh_keyfile} --jslaveflavor={jslaveflavor} \
+                --jslaveimage={jslaveimage} --jslavename=$JSLAVENAME --site=$SITE --jslave_execs={jslave_execs} \
+                --jslavecreate --resources_file={jslavename}.json --topology={topology_path}/{topology}
 
                 TR_STATUS=$?
                 if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
@@ -68,12 +69,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{topology}-2-runtest'
+          - project: '{jslaveimage}-unittest-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{topology}-3-teardown'
+          - project: '{jslaveimage}-unittest-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -82,9 +83,9 @@
 
 
 - job-template:
-    name: '{topology}-2-runtest'
+    name: '{jslaveimage}-unittest-2-runtest'
     defaults: ci-workflow-runtest
-    node: '{topology}'
+    node: '{jslaveimage}-{jslavename}'
     scm:
         - git:
             url: 'https://github.com/pulp/pulp.git'
@@ -107,28 +108,149 @@
                 - origin/$PULP_GIT_NECTAR_BRANCH
             basedir: nectar
         - git:
-            url: 'https://github.com/pulp/gofer.git'
+            url: 'https://github.com/jortel/gofer.git'
             branches:
                 - origin/$PULP_GIT_GOFER_BRANCH
             basedir: gofer
     builders:
         - copyartifact:
-            project: '{topology}-1-provision'
+            project: '{jslaveimage}-unittest-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
         - shell: |
             #!/bin/bash
-            set -x
-
-            sudo yum -y install python-mock python-nose python-coverage
-
+            # The teardown script only works with password auth so this creates a jenkins user and sets a password
             cd $WORKSPACE
 
-            bash $WORKSPACE/pulp/playpen/ci/setup.sh
-            bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
-            bash -ex $WORKSPACE/pulp/playpen/ci/build_rpm.sh
+            echo "Setting up after source control extract"
+            set -x
+            env
+            OS_NAME=$(lsb_release -si)
+            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
+            cd $WORKSPACE
 
+            useradd -G wheel {jslaveusername}
+            chpasswd {jslaveusername}:{jslavepassword}
+            sed -i 's|[#]*PasswordAuthentication no|PasswordAuthentication yes|g' /etc/ssh/sshd_config
+            service sshd restart
+
+            set -x
+
+            yum -y install python-mock python-nose python-coverage tito rpm-build
+            
+            if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
+                echo "[pulp-2.4-beta]
+                name=Pulp 2.4 Beta Builds
+                baseurl=https://repos.fedorapeople.org/repos/pulp/pulp/beta/2.4/\$releasever/\$basearch/
+                enabled=1
+                skip_if_unavailable=1
+                gpgcheck=0" | tee /etc/yum.repos.d/pulp-beta.repo
+            else
+                echo "[pulp-2.4-beta]
+                name=Pulp 2.4 Beta Builds
+                baseurl=https://repos.fedorapeople.org/repos/pulp/pulp/beta/2.4/fedora-\$releasever/\$basearch/
+                enabled=1
+                skip_if_unavailable=1
+                gpgcheck=0" | tee /etc/yum.repos.d/pulp-beta.repo
+            fi
+
+            yum -y install @pulp-server @pulp-admin @pulp-consumer
+            yum remove pulp-\* python-pulp\*
+
+            if [ "$OS_NAME" == "RedHatEnterpriseServer" ] && [ "$OS_VERSION" == "5" ]; then
+                # don't install nectar on RHEL 5
+                echo "Nectar is not installed on RHEL 5"
+            else
+                pushd nectar
+                # Find all the setup.py files and execute run setup.py develop in those directories
+                find . -name setup.py | while read SETUP_FILE; do
+                    SETUP_DIR=`dirname "$SETUP_FILE"`
+                    pushd $SETUP_DIR
+                    python setup.py develop
+                    popd
+                done
+
+                python pulp-dev.py -I
+                popd
+            fi
+
+            pushd gofer
+            # Find all the setup.py files and execute run setup.py develop in those directories
+            find . -name setup.py | while read SETUP_FILE; do
+                SETUP_DIR=`dirname "$SETUP_FILE"`
+                pushd $SETUP_DIR
+                python setup.py develop
+                popd
+            done
+            python pulp-dev.py -I
+            popd
+
+            pushd pulp
+            # Find all the setup.py files and execute run setup.py develop in those directories
+            find . -name setup.py | while read SETUP_FILE; do
+                SETUP_DIR=`dirname "$SETUP_FILE"`
+                pushd $SETUP_DIR
+                python setup.py develop
+                popd
+            done
+            python pulp-dev.py -I
+            popd
+
+            pushd pulp_rpm
+            # Find all the setup.py files and execute run setup.py develop in those directories
+            find . -name setup.py | while read SETUP_FILE; do
+                SETUP_DIR=`dirname "$SETUP_FILE"`
+                pushd $SETUP_DIR
+                python setup.py develop
+                popd
+            done
+            python pulp-dev.py -I
+            popd
+
+            pushd pulp_puppet
+            # Find all the setup.py files and execute run setup.py develop in those directories
+            find . -name setup.py | while read SETUP_FILE; do
+                SETUP_DIR=`dirname "$SETUP_FILE"`
+                pushd $SETUP_DIR
+                python setup.py develop
+                popd
+            done
+            python pulp-dev.py -I
+            popd
+            
+
+            # Start everything
+            service mongod restart
+            service qpidd start
+            sudo -u apache pulp-manage-db
+
+            service httpd start
+            service pulp_workers start
+            service pulp_celerybeat start
+            service pulp_resource_manager start
+
+                
+            # Run the tests
+            echo "Running the tests"
+            cd $WORKSPACE
+            rm -rf test
+            mkdir -p test
+            rm -rf coverage
+            mkdir -p coverage
+
+            pushd pulp
+            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml
+
+            popd
+            pushd pulp_rpm
+            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_rpm_test.xml
+
+            popd
+            pushd pulp_rpm
+            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_puppet_test.xml
+
+            #TODO Add the build rpm step
 
     publishers:
       - cobertura:
@@ -150,12 +272,12 @@
           allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{topology}-3-teardown'
+          - project: '{jslaveimage}-unittest-3-teardown'
             current-parameters: true
       - default-ci-workflow-publishers
 
 - job-template:
-    name: '{topology}-3-teardown'
+    name: '{jslaveimage}-unittest-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -163,54 +285,57 @@
             #!/bin/bash
             export JSLAVETEARDOWN={jslaveteardown}
 
-            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
             if [ "$JSLAVETEARDOWN" == "True" ]
             then
               $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
-              --topology=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
-              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown
+              --jslavename=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
+              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown \
+              --topology={topology_path}/{topology}
 
               TR_STATUS=$?
               if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
             fi
 
 - job-group:
-    name: '{topology}'
+    name: 'unittest-jobs'
     jobs:
-      - '{topology}-1-provision'
-      - '{topology}-2-runtest'
-      - '{topology}-3-teardown'
-
+      - '{jslaveimage}-unittest-1-provision'
+      - '{jslaveimage}-unittest-2-runtest'
+      - '{jslaveimage}-unittest-3-teardown'
 - project:
     name: unit-tests
     project:
      - workflow
     project_defaults:
      - pulp_packaging/ci/config/project_defaults
-    topology_path:
+    jslavename_path:
      - pulp_packaging/ci/config
-    topology:
-     - unittest-rhel5
-     - unittest-rhel6
-     - unittest-rhel7
-     - unittest-fc19
-     - unittest-fc20
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
-     - '{topology}'
+     - 'unittest-jobs'
+    topology_path:
+     - pulp_packaging/ci/config
+    topology:
+     - unittest-rhel6
     jslavename:
      - 'unittest-slave'
     jslave_execs:
-     - 4
+     - 2
     jslaveimage:
-     - rhel-x86_64-7.0-20140915-jenkins
+        # Instead of using the resource definitions to dictate the slave image configuration
+        - Fedora-x86_64-19-20140407-SNAP
+        - Fedora-x86_64-20-20140407-SNAP
+        - RHEL-x86_64-5.10-20140827-SNAP
+        - RHEL-x86_64-6.5-20140307-SNAP
+        - RHEL-x86_64-7.0-20140506-SNAP
     jslaveflavor:
-     - m1.small
+     - m1.medium
     jslaveusername:
-     - root
+     - jenkins
     jslavepassword:
-     - 123456
+     - jenkins
     jslaveteardown:
      - True
