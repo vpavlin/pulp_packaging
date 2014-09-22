@@ -1,5 +1,5 @@
 - job-template:
-    name: '{project}-{platform}-1-provision'
+    name: '{topology}-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -11,28 +11,43 @@
             description: |
               Site where to provision resources
         - string:
-            name: REPO
-            default: https://repos.fedorapeople.org/repos/pulp/pulp/testing/2.5/
-            description: |
-                The URL to the repository to install Pulp from.
-        - string:
-            name: TEST_SUITE_BRANCH
+            name: PULP_GIT_PULP_BRANCH
             default: master
             description: |
-                The git branch to use in the integration test suite, e.g. 'master', 'pulp-2.4', etc
+                The branch of the Pulp platform to run the unit tests against.
+        - string:
+            name: PULP_GIT_PULP_RPM_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp RPM plugin to run the unit tests against.
+        - string:
+            name: PULP_GIT_PULP_PUPPET_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp Puppet plugin to run the unit tests against.
+        - string:
+            name: PULP_GIT_NECTAR_BRANCH
+            default: master
+            description: |
+                The branch of nectar to run the unit tests against.
+        - string:
+            name: PULP_GIT_GOFER_BRANCH
+            default: master
+            description: |
+                The branch of gofer to run the unit tests against.
+
     builders:
         - shell: |
             #!/bin/bash
 
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{topology_path}
 
-            export JSLAVENAME={jslavename}-{platform}
+            export JSLAVENAME={topology}-{jslavename}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
                 $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --site=$SITE --project_defaults={project_defaults} \
-                --topology=ci-ops-central/project/config/aio_jslave --ssh_keyfile={ssh_keyfile} \
-                --jslavename={jslavename}-{platform} --jslaveflavor={jslaveflavor} --jslaveimage={jslaveimage} \
+                --topology={topology_path}/{topology} --ssh_keyfile={ssh_keyfile} \
                 --jslave_execs={jslave_execs} --jslavecreate --resources_file={jslavename}.json
 
                 TR_STATUS=$?
@@ -53,12 +68,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{project}-{platform}-2-runtest'
+          - project: '{topology}-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{project}-{platform}-3-teardown'
+          - project: '{topology}-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -67,49 +82,66 @@
 
 
 - job-template:
-    name: '{project}-{platform}-2-runtest'
+    name: '{topology}-2-runtest'
     defaults: ci-workflow-runtest
-    node: '{jslavename}-{platform}'
+    node: '{topology}'
+    scm:
+        - git:
+            url: 'https://github.com/pulp/pulp.git'
+            branches:
+                - origin/$PULP_GIT_PULP_BRANCH
+            basedir: pulp
+        - git:
+            url: 'https://github.com/pulp/pulp_rpm.git'
+            branches:
+                - origin/$PULP_GIT_PULP_RPM_BRANCH
+            basedir: pulp_rpm
+        - git:
+            url: 'https://github.com/pulp/pulp_puppet.git'
+            branches:
+                - origin/$PULP_GIT_PULP_PUPPET_BRANCH
+            basedir: pulp_puppet
+        - git:
+            url: 'https://github.com/pulp/nectar.git'
+            branches:
+                - origin/$PULP_GIT_NECTAR_BRANCH
+            basedir: nectar
+        - git:
+            url: 'https://github.com/pulp/gofer.git'
+            branches:
+                - origin/$PULP_GIT_GOFER_BRANCH
+            basedir: gofer
     builders:
         - copyartifact:
-            project: '{project}-{platform}-1-provision'
+            project: '{topology}-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
         - shell: |
             #!/bin/bash
+            set -x
 
-            yum -y install python-pip PyYAML git
-            pip install fabric python-keystoneclient python-glanceclient python-novaclient
+            sudo yum -y install python-mock python-nose python-coverage
 
             cd $WORKSPACE
-            git clone https://github.com/pulp/pulp.git
-            cd pulp/playpen/deploy/
-            # This is the private key for the OpenStack instances the script builds
-            cp -v $QEOS_CONFIG_ZIP/config/keys/pulp-ci-key.pem id_rsa
-            # This contains OpenStack credentials in a file of the following format:
-            #
-            # export OS_USERNAME=*username*
-            # export OS_PASSWORD=*password*
-            # export OS_AUTH_URL=*keystone auth URL*
-            # export OS_TENANT_NAME=*tenant name*
-            # export OS_TENANT_ID=*tenant id*
-            source $OS_CONFIG/qeos_credentials
 
-            # Run the tests against the specified platform
-            EXIT=0
-            python deploy-environment.py --config config/jenkins/{platform}-config.yml \
-            --deployed-config test.json --test-branch $TEST_SUITE_BRANCH --repo $REPO || EXIT=$?
-            python run-integration-tests.py --config test.json || EXIT=$?
-            python cleanup-environment.py --config test.json || EXIT=$?
+            bash $WORKSPACE/pulp/playpen/ci/setup.sh
+            bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
+            bash -ex $WORKSPACE/pulp/playpen/ci/build_rpm.sh
 
-            cp -r test $WORKSPACE/test
-            rm -rf $WORKSPACE/pulp
 
     publishers:
+      - cobertura:
+          report-file: 'coverage/*.xml'
+          fail-no-reports: true
+          targets:
+            - lines:
+                healthy: 80.0
+                unhealthy: 0.0
+                failing: 0.0
       # Publish a pretty graph of the test results
       - junit:
-          results: test/*.xml
+          results: 'test/*.xml'
           keep-long-stdio: true
           test-stability: true
       # Archive the test results
@@ -118,12 +150,12 @@
           allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{project}-{platform}-3-teardown'
+          - project: '{topology}-3-teardown'
             current-parameters: true
       - default-ci-workflow-publishers
 
 - job-template:
-    name: '{project}-{platform}-3-teardown'
+    name: '{topology}-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -144,14 +176,14 @@
             fi
 
 - job-group:
-    name: '{platform}-integration-tests'
+    name: '{topology}'
     jobs:
-      - '{project}-{platform}-1-provision'
-      - '{project}-{platform}-2-runtest'
-      - '{project}-{platform}-3-teardown'
+      - '{topology}-1-provision'
+      - '{topology}-2-runtest'
+      - '{topology}-3-teardown'
 
 - project:
-    name: integration-jobs
+    name: unit-tests
     project:
      - workflow
     project_defaults:
@@ -159,21 +191,19 @@
     topology_path:
      - pulp_packaging/ci/config
     topology:
-     - integration-rhel6
-    platform:
-      - el5
-      - el6
-      - el7
-      - fc19
-      - fc20
+     - unittest-rhel5
+     - unittest-rhel6
+     - unittest-rhel7
+     - unittest-fc19
+     - unittest-fc20
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
-     - '{platform}-integration-tests'
+     - '{topology}'
     jslavename:
-     - 'jslave-integration-slave'
+     - 'unittest-slave'
     jslave_execs:
-     - 10
+     - 4
     jslaveimage:
      - rhel-x86_64-7.0-20140915-jenkins
     jslaveflavor:

@@ -1,7 +1,7 @@
 {
     "resources": [
         {
-            "name": "pulp-unittest-rhel7",
+            "name": "unittest-rhel7",
             "count": "1",
             "flavor": "m1.medium",
             "image": "RHEL-x86_64-7.0-20140506-SNAP",

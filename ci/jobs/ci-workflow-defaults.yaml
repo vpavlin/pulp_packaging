@@ -16,7 +16,7 @@
         - git:
             url: https://github.com/pulp/pulp_packaging.git
             branches:
-              - origin/master
+                - origin/jcline-integration-jobs
             basedir: pulp_packaging
             skip-tag: true
         - git:

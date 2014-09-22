@@ -1,7 +1,7 @@
 {
     "resources": [
         {
-            "name": "pulp-unittest-fc20",
+            "name": "unittest-fc20",
             "count": "1",
             "flavor": "m1.medium",
             "image": "Fedora-x86_64-20-20140407-SNAP",
