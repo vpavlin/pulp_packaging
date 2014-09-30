@@ -137,7 +137,7 @@
             then
               $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
               --topology=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
-              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown
+              --jslaveusername={jslaveusername} --ssh_keyfile={ssh_keyfile} --jslaveip=$JSLAVEIP --jslaveteardown
 
               TR_STATUS=$?
               if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
@@ -180,7 +180,5 @@
      - m1.small
     jslaveusername:
      - root
-    jslavepassword:
-     - 123456
     jslaveteardown:
      - True
