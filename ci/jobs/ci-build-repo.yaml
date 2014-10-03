@@ -139,6 +139,11 @@
             env
             cd $WORKSPACE
 
+            # Consider adding this as an option
+            export REPO_HOST="pulp-infra@satellite6.lab.eng.rdu2.redhat.com"
+            export REPO_LOCATION="/var/www/html/pulp/$KOJI_BUILD_STREAM/$KOJI_BUILD_VERSION/"
+            export BUILD_HISTORY=30
+
             echo "Installing build tools..."
             yum -y install rpm-build redhat-rpm-config koji mock rpmdevtools rpmlint tito
 
@@ -147,7 +152,6 @@
             cp -v $KOJI_CONFIG/.katello.cert ~/
             cp -v $KOJI_CONFIG/.katello-ca.cert ~/
             cp -v $KOJI_CONFIG/satellite6_rsa .
-            koji moshimoshi
 
             echo "Building repository..."
             python pulp/rel-eng/builder.py $KOJI_BUILD_VERSION $KOJI_BUILD_STREAM --scratch
