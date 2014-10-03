@@ -1,5 +1,9 @@
+# This set of Jenkins jobs creates an OpenStack instance, installs all the
+# necessary tools to build a repository with the help of Koji, then publishes
+# the results.
+
 - job-template:
-    name: '{jslaveimage}-unittest-1-provision'
+    name: 'build-repo-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -10,6 +14,19 @@
               - os1
             description: |
               Site where to provision resources
+        - choice:
+            name: KOJI_BUILD_STREAM
+            choices:
+              - testing
+            description: |
+              Build stream to use for the builder.py script
+        - choice:
+            name: KOJI_BUILD_VERSION
+            choices:
+              - '2.5'
+              - '2.4'
+            description: |
+              Build version to use in the builder.py script
         - string:
             name: PULP_GIT_PULP_BRANCH
             default: master
@@ -39,16 +56,14 @@
     builders:
         - shell: |
             #!/bin/bash
-
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
+            export JSLAVENAME={jslavename}
 
-            export JSLAVENAME={jslaveimage}-{jslavename}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
                 $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults={project_defaults} \
-                --ssh_keyfile={ssh_keyfile} --jslaveflavor={jslaveflavor} \
-                --jslaveimage={jslaveimage} --jslavename=$JSLAVENAME --site=$SITE --jslave_execs={jslave_execs} \
+                --ssh_keyfile={ssh_keyfile} --jslavename={jslavename} --site=$SITE --jslave_execs={jslave_execs} \
                 --jslavecreate --resources_file={jslavename}.json --topology={topology_path}/{topology}
 
                 TR_STATUS=$?
@@ -69,12 +84,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{jslaveimage}-unittest-2-runtest'
+          - project: 'build-repo-2-run'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{jslaveimage}-unittest-3-teardown'
+          - project: 'build-repo-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -83,9 +98,9 @@
 
 
 - job-template:
-    name: '{jslaveimage}-unittest-2-runtest'
+    name: 'build-repo-2-run'
     defaults: ci-workflow-runtest
-    node: '{jslaveimage}-{jslavename}'
+    node: '{jslavename}'
     scm:
         - git:
             url: 'https://github.com/pulp/pulp.git'
@@ -114,71 +129,57 @@
             basedir: gofer
     builders:
         - copyartifact:
-            project: '{jslaveimage}-unittest-1-provision'
+            project: 'build-repo-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
         - shell: |
             #!/bin/bash
-            cd $WORKSPACE
-
-            echo "Setting up after source control extract"
             set -x
             env
-            OS_NAME=$(lsb_release -si)
-            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
             cd $WORKSPACE
 
-            # Turn on tty for sudo
-            sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
-            set -x
+            echo "Installing build tools..."
+            yum -y install rpm-build redhat-rpm-config koji mock rpmdevtools rpmlint tito
 
-            yum -y install python-mock tito rpm-build python-lxml python-paste
-            sudo pip install coverage nose nosexcover --upgrade
+            # Copy the Katello Koji credentials into the home directory
+            cp -v -R $KOJI_CONFIG/.koji ~/
+            cp -v $KOJI_CONFIG/.katello.cert ~/
+            cp -v $KOJI_CONFIG/.katello-ca.cert ~/
+            cp -v $KOJI_CONFIG/satellite6_rsa .
+            koji moshimoshi
 
-            # TODO Enable testing/beta
-            if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
-                curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
-            else
-                curl -o /etc/yum.repos.d/fedora-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/fedora-pulp.repo
+            echo "Building repository..."
+            python pulp/rel-eng/builder.py $KOJI_BUILD_VERSION $KOJI_BUILD_STREAM --scratch
+
+            echo "Copying repository to the remote host..."
+            mv mash $BUILD_ID
+            ssh -i satellite6_rsa $REPO_HOST mkdir -p $REPO_LOCATION
+            scp -i satellite6_rsa -r $BUILD_ID $REPO_HOST:$REPO_LOCATION
+
+            # Run a script to link the new build and remove old builds
+            ssh -i satellite6_rsa $REPO_HOST << ENDSSH
+            cd $REPO_LOCATION
+
+            # Link the latest build
+            rm latest
+            ln -s $BUILD_ID latest
+
+            # Remove all but the last BUILD_HISTORY builds
+            if [ "$(ls -l | wc -l)" -ge "$BUILD_HISTORY" ] ; then
+                     (ls -t | head -n $BUILD_HISTORY ; ls) | sort | uniq -u | xargs rm -r
             fi
-
-            yum -y install @pulp-server @pulp-admin @pulp-consumer
-            yum remove pulp-\* python-pulp\*
-
-            service mongod restart
-
-            bash $WORKSPACE/pulp/playpen/ci/setup.sh
-
-            bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
-
+            ENDSSH
 
     publishers:
-#      - cobertura:
-#          report-file: 'coverage/*.xml'
-#          fail-no-reports: true
-#          targets:
-#            - lines:
-#                healthy: 80.0
-#                unhealthy: 0.0
-#                failing: 0.0
-      # Publish a pretty graph of the test results
-#      - junit:
-#          results: 'test/*.xml'
-#          keep-long-stdio: true
-#          test-stability: true
-      # Archive the test results
-#      - archive:
-#          artifacts: 'test/**'
-#          allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{jslaveimage}-unittest-3-teardown'
+          - project: 'build-repo-3-teardown'
             current-parameters: true
 #      - default-ci-workflow-publishers
 
 - job-template:
-    name: '{jslaveimage}-unittest-3-teardown'
+    name: 'build-repo-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -203,13 +204,14 @@
             fi
 
 - job-group:
-    name: 'unittest-jobs'
+    name: 'build-repo-jobs'
     jobs:
-      - '{jslaveimage}-unittest-1-provision'
-      - '{jslaveimage}-unittest-2-runtest'
-      - '{jslaveimage}-unittest-3-teardown'
+      - 'build-repo-1-provision'
+      - 'build-repo-2-run'
+      - 'build-repo-3-teardown'
+
 - project:
-    name: unit-tests
+    name: build-repo
     project:
      - workflow
     project_defaults:
@@ -219,24 +221,15 @@
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
-     - 'unittest-jobs'
+     - 'build-repo-jobs'
     topology_path:
      - pulp_packaging/ci/config
     topology:
-     - unittest-rhel6
+        - unittest-rhel6
     jslavename:
-     - 'unittest-slave'
+     - 'build-repo-slave'
     jslave_execs:
      - 2
-    jslaveimage:
-        # Instead of using the resource definitions to dictate the slave image configuration
-#        - Fedora-x86_64-19-20140407-SNAP
-#        - Fedora-x86_64-20-20140407-SNAP
-#        - RHEL-x86_64-5.10-20140827-SNAP
-        - RHEL-x86_64-6.5-20140307-SNAP
-#        - RHEL-x86_64-7.0-20140506-SNAP
-    jslaveflavor:
-     - m1.medium
     jslaveusername:
      - root
     jslaveteardown:

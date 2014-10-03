@@ -56,6 +56,10 @@
             - zip-file:
                 credential-id: 560cbeac-170a-4ebe-bad0-37706307a4c8
                 variable: OS_CONFIG
+            - zip-file:
+                credential-id: 9051da21-c8af-49bd-a0ac-c1dd94a6d216
+                variable: KOJI_CONFIG
+
 
 - wrapper:
     name: default-ci-workflow-build-timeout-wrapper
