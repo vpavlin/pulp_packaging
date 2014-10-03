@@ -47,7 +47,7 @@
             if [ "$JSLAVENAME" != "master" ]
             then
                 $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults={project_defaults} \
-                --jslavename={jslavename_path}/{jslavename} --ssh_keyfile={ssh_keyfile} --jslaveflavor={jslaveflavor} \
+                --ssh_keyfile={ssh_keyfile} --jslaveflavor={jslaveflavor} \
                 --jslaveimage={jslaveimage} --jslavename=$JSLAVENAME --site=$SITE --jslave_execs={jslave_execs} \
                 --jslavecreate --resources_file={jslavename}.json --topology={topology_path}/{topology}
 
@@ -120,7 +120,6 @@
 
         - shell: |
             #!/bin/bash
-            # The teardown script only works with password auth so this creates a jenkins user and sets a password
             cd $WORKSPACE
 
             echo "Setting up after source control extract"
@@ -130,151 +129,51 @@
             OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
             cd $WORKSPACE
 
-            useradd -G wheel {jslaveusername}
-            chpasswd {jslaveusername}:{jslavepassword}
-            sed -i 's|[#]*PasswordAuthentication no|PasswordAuthentication yes|g' /etc/ssh/sshd_config
-            service sshd restart
-
+            sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
             set -x
 
-            yum -y install python-mock python-nose python-coverage tito rpm-build
-            
+            yum -y install python-mock tito rpm-build python-lxml python-paste
+            sudo pip install coverage nose nosexcover --upgrade
+
             if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
-                echo "[pulp-2.4-beta]
-                name=Pulp 2.4 Beta Builds
-                baseurl=https://repos.fedorapeople.org/repos/pulp/pulp/beta/2.4/\$releasever/\$basearch/
-                enabled=1
-                skip_if_unavailable=1
-                gpgcheck=0" | tee /etc/yum.repos.d/pulp-beta.repo
+                curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
             else
-                echo "[pulp-2.4-beta]
-                name=Pulp 2.4 Beta Builds
-                baseurl=https://repos.fedorapeople.org/repos/pulp/pulp/beta/2.4/fedora-\$releasever/\$basearch/
-                enabled=1
-                skip_if_unavailable=1
-                gpgcheck=0" | tee /etc/yum.repos.d/pulp-beta.repo
+                curl -o /etc/yum.repos.d/fedora-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/fedora-pulp.repo
             fi
 
             yum -y install @pulp-server @pulp-admin @pulp-consumer
             yum remove pulp-\* python-pulp\*
 
-            if [ "$OS_NAME" == "RedHatEnterpriseServer" ] && [ "$OS_VERSION" == "5" ]; then
-                # don't install nectar on RHEL 5
-                echo "Nectar is not installed on RHEL 5"
-            else
-                pushd nectar
-                # Find all the setup.py files and execute run setup.py develop in those directories
-                find . -name setup.py | while read SETUP_FILE; do
-                    SETUP_DIR=`dirname "$SETUP_FILE"`
-                    pushd $SETUP_DIR
-                    python setup.py develop
-                    popd
-                done
-
-                python pulp-dev.py -I
-                popd
-            fi
-
-            pushd gofer
-            # Find all the setup.py files and execute run setup.py develop in those directories
-            find . -name setup.py | while read SETUP_FILE; do
-                SETUP_DIR=`dirname "$SETUP_FILE"`
-                pushd $SETUP_DIR
-                python setup.py develop
-                popd
-            done
-            python pulp-dev.py -I
-            popd
-
-            pushd pulp
-            # Find all the setup.py files and execute run setup.py develop in those directories
-            find . -name setup.py | while read SETUP_FILE; do
-                SETUP_DIR=`dirname "$SETUP_FILE"`
-                pushd $SETUP_DIR
-                python setup.py develop
-                popd
-            done
-            python pulp-dev.py -I
-            popd
-
-            pushd pulp_rpm
-            # Find all the setup.py files and execute run setup.py develop in those directories
-            find . -name setup.py | while read SETUP_FILE; do
-                SETUP_DIR=`dirname "$SETUP_FILE"`
-                pushd $SETUP_DIR
-                python setup.py develop
-                popd
-            done
-            python pulp-dev.py -I
-            popd
-
-            pushd pulp_puppet
-            # Find all the setup.py files and execute run setup.py develop in those directories
-            find . -name setup.py | while read SETUP_FILE; do
-                SETUP_DIR=`dirname "$SETUP_FILE"`
-                pushd $SETUP_DIR
-                python setup.py develop
-                popd
-            done
-            python pulp-dev.py -I
-            popd
-            
-
-            # Start everything
             service mongod restart
-            service qpidd start
-            sudo -u apache pulp-manage-db
 
-            service httpd start
-            service pulp_workers start
-            service pulp_celerybeat start
-            service pulp_resource_manager start
+            bash $WORKSPACE/pulp/playpen/ci/setup.sh
 
-                
-            # Run the tests
-            echo "Running the tests"
-            cd $WORKSPACE
-            rm -rf test
-            mkdir -p test
-            rm -rf coverage
-            mkdir -p coverage
+            bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
 
-            pushd pulp
-            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml
-
-            popd
-            pushd pulp_rpm
-            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_rpm_test.xml
-
-            popd
-            pushd pulp_rpm
-            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_puppet_test.xml
-
-            #TODO Add the build rpm step
 
     publishers:
-      - cobertura:
-          report-file: 'coverage/*.xml'
-          fail-no-reports: true
-          targets:
-            - lines:
-                healthy: 80.0
-                unhealthy: 0.0
-                failing: 0.0
+#      - cobertura:
+#          report-file: 'coverage/*.xml'
+#          fail-no-reports: true
+#          targets:
+#            - lines:
+#                healthy: 80.0
+#                unhealthy: 0.0
+#                failing: 0.0
       # Publish a pretty graph of the test results
-      - junit:
-          results: 'test/*.xml'
-          keep-long-stdio: true
-          test-stability: true
+#      - junit:
+#          results: 'test/*.xml'
+#          keep-long-stdio: true
+#          test-stability: true
       # Archive the test results
-      - archive:
-          artifacts: 'test/**'
-          allow-empty: 'true'
+#      - archive:
+#          artifacts: 'test/**'
+#          allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
           - project: '{jslaveimage}-unittest-3-teardown'
             current-parameters: true
-      - default-ci-workflow-publishers
+#      - default-ci-workflow-publishers
 
 - job-template:
     name: '{jslaveimage}-unittest-3-teardown'
@@ -285,13 +184,16 @@
             #!/bin/bash
             export JSLAVETEARDOWN={jslaveteardown}
 
+            # Give it some time for the previous jenkins job to clean up so the teardown will complete properly
+            sleep 15
+
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
             if [ "$JSLAVETEARDOWN" == "True" ]
             then
               $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
               --jslavename=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
-              --jslaveusername={jslaveusername} --jslavepassword={jslavepassword} --jslaveip=$JSLAVEIP --jslaveteardown \
+              --jslaveusername={jslaveusername} --ssh_keyfile={ssh_keyfile} --jslaveip=$JSLAVEIP --jslaveteardown \
               --topology={topology_path}/{topology}
 
               TR_STATUS=$?
@@ -326,16 +228,14 @@
      - 2
     jslaveimage:
         # Instead of using the resource definitions to dictate the slave image configuration
-        - Fedora-x86_64-19-20140407-SNAP
-        - Fedora-x86_64-20-20140407-SNAP
-        - RHEL-x86_64-5.10-20140827-SNAP
+#        - Fedora-x86_64-19-20140407-SNAP
+#        - Fedora-x86_64-20-20140407-SNAP
+#        - RHEL-x86_64-5.10-20140827-SNAP
         - RHEL-x86_64-6.5-20140307-SNAP
-        - RHEL-x86_64-7.0-20140506-SNAP
+#        - RHEL-x86_64-7.0-20140506-SNAP
     jslaveflavor:
      - m1.medium
     jslaveusername:
-     - jenkins
-    jslavepassword:
-     - jenkins
+     - root
     jslaveteardown:
      - True
