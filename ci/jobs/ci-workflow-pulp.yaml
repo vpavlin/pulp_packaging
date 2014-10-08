@@ -161,11 +161,11 @@
     topology:
      - integration-rhel6
     platform:
-      - el5
+#      - el5
       - el6
-      - el7
-      - fc19
-      - fc20
+#      - el7
+#      - fc19
+#      - fc20
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:

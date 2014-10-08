@@ -1,5 +1,5 @@
 - job-template:
-    name: '{jslaveimage}-unittest-1-provision'
+    name: '{platform}-unittest-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -42,13 +42,13 @@
 
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
-            export JSLAVENAME={jslaveimage}-{jslavename}
+            export JSLAVENAME={platform}-{jslavename}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
                 $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults={project_defaults} \
-                --ssh_keyfile={ssh_keyfile} --jslaveflavor={jslaveflavor} \
-                --jslaveimage={jslaveimage} --jslavename=$JSLAVENAME --site=$SITE --jslave_execs={jslave_execs} \
+                --ssh_keyfile={ssh_keyfile}  \
+                --jslavename=$JSLAVENAME --site=$SITE --jslave_execs={jslave_execs} \
                 --jslavecreate --resources_file={jslavename}.json --topology={topology_path}/{topology}
 
                 TR_STATUS=$?
@@ -69,12 +69,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{jslaveimage}-unittest-2-runtest'
+          - project: '{platform}-unittest-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{jslaveimage}-unittest-3-teardown'
+          - project: '{platform}-unittest-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -83,38 +83,43 @@
 
 
 - job-template:
-    name: '{jslaveimage}-unittest-2-runtest'
+    name: '{platform}-unittest-2-runtest'
     defaults: ci-workflow-runtest
-    node: '{jslaveimage}-{jslavename}'
+    node: '{platform}-{jslavename}'
     scm:
         - git:
             url: 'https://github.com/pulp/pulp.git'
             branches:
                 - origin/$PULP_GIT_PULP_BRANCH
             basedir: pulp
+            skip-tag: True
         - git:
             url: 'https://github.com/pulp/pulp_rpm.git'
             branches:
                 - origin/$PULP_GIT_PULP_RPM_BRANCH
             basedir: pulp_rpm
+            skip-tag: True
         - git:
             url: 'https://github.com/pulp/pulp_puppet.git'
             branches:
                 - origin/$PULP_GIT_PULP_PUPPET_BRANCH
             basedir: pulp_puppet
+            skip-tag: True
         - git:
             url: 'https://github.com/pulp/nectar.git'
             branches:
                 - origin/$PULP_GIT_NECTAR_BRANCH
             basedir: nectar
+            skip-tag: True
         - git:
             url: 'https://github.com/jortel/gofer.git'
             branches:
                 - origin/$PULP_GIT_GOFER_BRANCH
             basedir: gofer
+            skip-tag: True
     builders:
         - copyartifact:
-            project: '{jslaveimage}-unittest-1-provision'
+            project: '{platform}-unittest-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
@@ -147,10 +152,19 @@
             yum remove pulp-\* python-pulp\*
 
             service mongod restart
+            # service qpidd restart
 
             bash $WORKSPACE/pulp/playpen/ci/setup.sh
 
-            bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
+            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
+            rm -rf $WORKSPACE/test
+            mkdir -p $WORKSPACE/test
+            rm -rf $WORKSPACE/coverage
+            mkdir -p $WORKSPACE/coverage
+
+            cd $WORKSPACE/pulp
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
+
 
 
     publishers:
@@ -173,12 +187,12 @@
 #          allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{jslaveimage}-unittest-3-teardown'
+          - project: '{platform}-unittest-3-teardown'
             current-parameters: true
 #      - default-ci-workflow-publishers
 
 - job-template:
-    name: '{jslaveimage}-unittest-3-teardown'
+    name: '{platform}-unittest-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -187,7 +201,8 @@
             export JSLAVETEARDOWN={jslaveteardown}
 
             # Give it some time for the previous jenkins job to clean up so the teardown will complete properly
-            sleep 15
+            echo 'sleeping for 1 minute so that previous job can clean up'
+            sleep 60
 
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
@@ -205,9 +220,9 @@
 - job-group:
     name: 'unittest-jobs'
     jobs:
-      - '{jslaveimage}-unittest-1-provision'
-      - '{jslaveimage}-unittest-2-runtest'
-      - '{jslaveimage}-unittest-3-teardown'
+      - '{platform}-unittest-1-provision'
+      - '{platform}-unittest-2-runtest'
+      - '{platform}-unittest-3-teardown'
 - project:
     name: unit-tests
     project:
@@ -228,15 +243,21 @@
      - 'unittest-slave'
     jslave_execs:
      - 2
-    jslaveimage:
+    platform:
+#     - fc19
+#     - fc20
+#     - rhel5
+     - rhel6
+#     - rhel7
+#    jslaveimage:
         # Instead of using the resource definitions to dictate the slave image configuration
 #        - Fedora-x86_64-19-20140407-SNAP
 #        - Fedora-x86_64-20-20140407-SNAP
 #        - RHEL-x86_64-5.10-20140827-SNAP
-        - RHEL-x86_64-6.5-20140307-SNAP
+#        - RHEL-x86_64-6.5-20140307-SNAP
 #        - RHEL-x86_64-7.0-20140506-SNAP
-    jslaveflavor:
-     - m1.medium
+#    jslaveflavor:
+#     - m1.medium
     jslaveusername:
      - root
     jslaveteardown:
