@@ -1,5 +1,5 @@
 - job-template:
-    name: '{platform}-unittest-1-provision'
+    name: '{topology}-unittest-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -42,7 +42,7 @@
 
             cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{jslavename_path}
 
-            export JSLAVENAME={platform}-{jslavename}
+            export JSLAVENAME={topology}-{jslavename}
             # Provision Jenkins Slave
             if [ "$JSLAVENAME" != "master" ]
             then
@@ -69,12 +69,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{platform}-unittest-2-runtest'
+          - project: '{topology}-unittest-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{platform}-unittest-3-teardown'
+          - project: '{topology}-unittest-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -83,9 +83,9 @@
 
 
 - job-template:
-    name: '{platform}-unittest-2-runtest'
+    name: '{topology}-unittest-2-runtest'
     defaults: ci-workflow-runtest
-    node: '{platform}-{jslavename}'
+    node: '{topology}-{jslavename}'
     scm:
         - git:
             url: 'https://github.com/pulp/pulp.git'
@@ -119,19 +119,17 @@
             skip-tag: True
     builders:
         - copyartifact:
-            project: '{platform}-unittest-1-provision'
+            project: '{topology}-unittest-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
         - shell: |
             #!/bin/bash
-            cd $WORKSPACE
-
             echo "Setting up after source control extract"
-            set -x
             env
             OS_NAME=$(lsb_release -si)
             OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
+            setenforce 0
             cd $WORKSPACE
 
             # Turn on tty for sudo
@@ -149,50 +147,51 @@
             fi
 
             yum -y install @pulp-server @pulp-admin @pulp-consumer
-            yum remove pulp-\* python-pulp\*
+            yum -y remove pulp-\* python-pulp\*
 
             service mongod restart
-            # service qpidd restart
+            service qpidd restart
 
-            bash $WORKSPACE/pulp/playpen/ci/setup.sh
-
-            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
             rm -rf $WORKSPACE/test
             mkdir -p $WORKSPACE/test
             rm -rf $WORKSPACE/coverage
             mkdir -p $WORKSPACE/coverage
 
+            useradd pulp
+            chown -R pulp:pulp $WORKSPACE
+
+            bash $WORKSPACE/pulp/playpen/ci/setup.sh
+            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
+
             cd $WORKSPACE/pulp
-            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
-
-
+            sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
 
     publishers:
-#      - cobertura:
-#          report-file: 'coverage/*.xml'
-#          fail-no-reports: true
-#          targets:
-#            - lines:
-#                healthy: 80.0
-#                unhealthy: 0.0
-#                failing: 0.0
+      - cobertura:
+          report-file: 'coverage/*.xml'
+          fail-no-reports: true
+          targets:
+            - lines:
+                healthy: 80.0
+                unhealthy: 0.0
+                failing: 0.0
       # Publish a pretty graph of the test results
-#      - junit:
-#          results: 'test/*.xml'
-#          keep-long-stdio: true
-#          test-stability: true
+      - junit:
+          results: 'test/*.xml'
+          keep-long-stdio: true
+          test-stability: true
       # Archive the test results
-#      - archive:
-#          artifacts: 'test/**'
-#          allow-empty: 'true'
+      - archive:
+          artifacts: 'test/**'
+          allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{platform}-unittest-3-teardown'
+          - project: '{topology}-unittest-3-teardown'
             current-parameters: true
-#      - default-ci-workflow-publishers
+      - default-ci-workflow-publishers
 
 - job-template:
-    name: '{platform}-unittest-3-teardown'
+    name: '{topology}-unittest-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -220,9 +219,9 @@
 - job-group:
     name: 'unittest-jobs'
     jobs:
-      - '{platform}-unittest-1-provision'
-      - '{platform}-unittest-2-runtest'
-      - '{platform}-unittest-3-teardown'
+      - '{topology}-unittest-1-provision'
+      - '{topology}-unittest-2-runtest'
+      - '{topology}-unittest-3-teardown'
 - project:
     name: unit-tests
     project:
@@ -238,26 +237,15 @@
     topology_path:
      - pulp_packaging/ci/config
     topology:
-     - unittest-rhel6
+     - fc19
+     - fc20
+#     - rhel5
+     - rhel6
+     - rhel7
     jslavename:
      - 'unittest-slave'
     jslave_execs:
      - 2
-    platform:
-#     - fc19
-#     - fc20
-#     - rhel5
-     - rhel6
-#     - rhel7
-#    jslaveimage:
-        # Instead of using the resource definitions to dictate the slave image configuration
-#        - Fedora-x86_64-19-20140407-SNAP
-#        - Fedora-x86_64-20-20140407-SNAP
-#        - RHEL-x86_64-5.10-20140827-SNAP
-#        - RHEL-x86_64-6.5-20140307-SNAP
-#        - RHEL-x86_64-7.0-20140506-SNAP
-#    jslaveflavor:
-#     - m1.medium
     jslaveusername:
      - root
     jslaveteardown:

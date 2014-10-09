@@ -18,6 +18,8 @@
             name: KOJI_BUILD_STREAM
             choices:
               - testing
+              - beta
+              - stable
             description: |
               Build stream to use for the builder.py script
         - choice:
@@ -127,6 +129,16 @@
             branches:
                 - origin/$PULP_GIT_GOFER_BRANCH
             basedir: gofer
+    wrappers:
+        - timeout:
+            # Timeout in minutes
+            timeout: 60
+            timeout-var: 'BUILD_TIMEOUT'
+            fail: true
+            elastic-percentage: 200
+            elastic-default-timeout: 90
+            type: elastic
+
     builders:
         - copyartifact:
             project: 'build-repo-1-provision'
@@ -144,22 +156,21 @@
             export REPO_LOCATION="/var/www/html/pulp/$KOJI_BUILD_STREAM/$KOJI_BUILD_VERSION/"
             export BUILD_HISTORY=30
 
-            echo "Installing build tools..."
-            yum -y install rpm-build redhat-rpm-config koji mock rpmdevtools rpmlint tito
+            yum -y install rpm-build redhat-rpm-config koji mock rpmdevtools rpmlint tito createrepo
 
-            # Copy the Katello Koji credentials into the home directory
+            # Confirm koji is accessible
             cp -v -R $KOJI_CONFIG/.koji ~/
             cp -v $KOJI_CONFIG/.katello.cert ~/
             cp -v $KOJI_CONFIG/.katello-ca.cert ~/
             cp -v $KOJI_CONFIG/satellite6_rsa .
+            koji moshimoshi
 
-            echo "Building repository..."
-            python pulp/rel-eng/builder.py $KOJI_BUILD_VERSION $KOJI_BUILD_STREAM --scratch
+            EXIT=0
+            python pulp/rel-eng/builder.py $KOJI_BUILD_VERSION $KOJI_BUILD_STREAM --scratch || EXIT=$?
 
-            echo "Copying repository to the remote host..."
             mv mash $BUILD_ID
             ssh -i satellite6_rsa $REPO_HOST mkdir -p $REPO_LOCATION
-            scp -i satellite6_rsa -r $BUILD_ID $REPO_HOST:$REPO_LOCATION
+            scp -i satellite6_rsa -r $BUILD_ID $REPO_HOST:$REPO_LOCATION || EXIT=$?
 
             # Run a script to link the new build and remove old builds
             ssh -i satellite6_rsa $REPO_HOST << ENDSSH
@@ -174,6 +185,8 @@
                      (ls -t | head -n $BUILD_HISTORY ; ls) | sort | uniq -u | xargs rm -r
             fi
             ENDSSH
+
+            exit $EXIT
 
     publishers:
       # Tear down all the instances that were provisioned

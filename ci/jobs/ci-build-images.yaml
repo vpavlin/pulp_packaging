@@ -1,0 +1,157 @@
+# This set of Jenkins jobs creates an OpenStack instance, installs all the
+# necessary tools to build a repository with the help of Koji, then publishes
+# the results.
+
+- job-template:
+    name: 'build-images-1-provision'
+    defaults: ci-workflow-provision
+    node: master
+    parameters:
+        - choice:
+            name: SITE
+            choices:
+              - qeos
+              - os1
+            description: |
+              Site where to provision resources
+        - string:
+            name: PULP_GIT_PULP_BRANCH
+            default: master
+            description: |
+              Branch to use in the Pulp repository
+    builders:
+        - shell: |
+            #!/bin/bash
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{config_dir}
+            export JSLAVENAME={jslavename}
+
+            # Provision Jenkins Slave
+            if [ "$JSLAVENAME" != "master" ]
+            then
+                $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults={project_defaults} \
+                --ssh_keyfile={ssh_keyfile} --jslavename={jslavename} --site=$SITE --jslave_execs={jslave_execs} \
+                --jslavecreate --resources_file={jslavename}.json --topology={config_dir}/{topology}
+
+                TR_STATUS=$?
+                if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
+            fi
+
+            files=$(ls $WORKSPACE/*.slave 2>/dev/null)
+            if [ -e "$files" ]
+            then
+                cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
+            fi
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
+
+    publishers:
+      - archive:
+          artifacts: '*.txt, *.json'
+          allow-empty: 'true'
+      - trigger-parameterized-builds:
+          - project: 'build-images-2-run'
+            current-parameters: true
+            condition: 'SUCCESS'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+          - project: 'build-images-3-teardown'
+            current-parameters: true
+            condition: 'UNSTABLE_OR_WORSE'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+      - default-ci-workflow-publishers
+
+
+- job-template:
+    name: 'build-images-2-run'
+    defaults: ci-workflow-runtest
+    node: '{jslavename}'
+    scm:
+        - git:
+            url: 'https://github.com/pulp/pulp.git'
+            branches:
+                - origin/$PULP_GIT_PULP_BRANCH
+            basedir: pulp
+    builders:
+        - copyartifact:
+            project: 'build-repo-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+
+        - shell: |
+            #!/bin/bash
+            # TODO Add a task to confirm the validity of the images.
+            source $OS_CONFIG/qeos_credentials
+            cp -v $QEOS_CONFIG_ZIP/config/keys/pulp-ci-key.pem $WORKSPACE/pulp-ci-key.pem
+
+            # Install the necessary tools
+            yum -y install python-pip PyYAML git gcc python-devel libffi-devel openssl-devel
+            pip install fabric python-keystoneclient python-glanceclient python-novaclient -U
+
+            EXIT=0
+            cd $WORKSPACE/pulp/playpen/deploy
+            python utils/update-images.py --key-file $WORKSPACE/pulp-ci-key.pem --os-keyname pulp-ci-key --puppet-manifest utils/puppet/prepulp.pp
+
+
+    publishers:
+      # Tear down all the instances that were provisioned
+      - trigger-parameterized-builds:
+          - project: 'build-images-3-teardown'
+            current-parameters: true
+#      - default-ci-workflow-publishers
+
+- job-template:
+    name: 'build-images-3-teardown'
+    defaults: ci-workflow-provision
+    node: master
+    builders:
+        - shell: |
+            #!/bin/bash
+            export JSLAVETEARDOWN={jslaveteardown}
+
+            # Give it some time for the previous jenkins job to clean up so the teardown will complete properly
+            sleep 15
+
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/{config_dir}
+
+            if [ "$JSLAVETEARDOWN" == "True" ]
+            then
+              $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE --project_defaults={project_defaults} \
+              --jslavename=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
+              --jslaveusername={jslaveusername} --ssh_keyfile={ssh_keyfile} --jslaveip=$JSLAVEIP --jslaveteardown \
+              --topology={config_dir}/{topology}
+
+              TR_STATUS=$?
+              if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
+            fi
+
+- job-group:
+    name: 'build-images-jobs'
+    jobs:
+      - 'build-images-1-provision'
+      - 'build-images-2-run'
+      - 'build-images-3-teardown'
+
+- project:
+    name: build-images
+    project:
+     - workflow
+    project_defaults:
+     - pulp_packaging/ci/config/project_defaults
+    ssh_keyfile:
+     - pulp_packaging/ci/config/keys/pulp-ci-key.pem
+    jobs:
+     - 'build-images-jobs'
+    config_dir:
+     - pulp_packaging/ci/config
+    topology:
+     - unittest-rhel7
+    jslavename:
+     - 'build-images-slave'
+    jslave_execs:
+     - 4
+    jslaveusername:
+     - root
+    jslaveteardown:
+     - True
