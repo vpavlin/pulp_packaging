@@ -216,6 +216,244 @@
               if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
             fi
 
+# Special jobs to handle RHEL5
+- job:
+    name: 'rhel5-unittest-1-provision'
+    defaults: ci-workflow-provision
+    node: master
+    parameters:
+        - choice:
+            name: SITE
+            choices:
+              - qeos
+              - os1
+            description: |
+              Site where to provision resources
+        - string:
+            name: PULP_GIT_PULP_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp platform to run the unit tests against.
+        - string:
+            name: PULP_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp.git'
+            description: |
+                The respository URL to use for the Pulp platform
+        - string:
+            name: PULP_GIT_PULP_RPM_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp RPM plugin to run the unit tests against.
+        - string:
+            name: PULP_RPM_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp_rpm.git'
+            description: |
+                The respository URL to use for the Pulp RPM plugin
+        - string:
+            name: PULP_GIT_PULP_PUPPET_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp Puppet plugin to run the unit tests against.
+        - string:
+            name: PULP_PUPPET_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp_puppet.git'
+            description: |
+                The respository URL to use for the Pulp Puppet plugin
+        - string:
+            name: PULP_GIT_NECTAR_BRANCH
+            default: master
+            description: |
+                The branch of nectar to run the unit tests against.
+        - string:
+            name: NECTAR_GIT_REPOSITORY
+            default: 'https://github.com/pulp/nectar.git'
+            description: |
+                The respository URL to use for nector
+        - string:
+            name: PULP_GIT_GOFER_BRANCH
+            default: master
+            description: |
+                The branch of gofer to run the unit tests against.
+        - string:
+            name: GOFER_GIT_REPOSITORY
+            default: 'https://github.com/jortel/gofer.git'
+            description: |
+                The respository URL to use for gofer
+        - string:
+            name: AUTHOR
+            default: pulp
+            description: |
+                GitHub username to fetch cloned repositories from
+    builders:
+        - shell: |
+            #!/bin/bash
+
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/pulp_packaging/ci/config
+
+            $WORKSPACE/ci-ops-central/bootstrap/provision_jslave.sh --project_defaults=pulp_packaging/ci/config/project_defaults \
+            --ssh_keyfile=pulp_packaging/ci/config/keys/pulp-ci-key.pem --jslavename=rhel5-unittest-master --site=$SITE --jslave_execs=2 \
+            --jslavecreate --resources_file=rhel5-unittest-master.json --topology=pulp_packaging/ci/config/rhel7
+
+            TR_STATUS=$?
+            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
+
+            # Deploy a RHEL5 resource to run the unit tests on
+            $WORKSPACE/ci-ops-central/bootstrap/provision_resources.sh --project_defaults=pulp_packaging/ci/config/project_defaults \
+            --ssh_keyfile=pulp_packaging/ci/config/keys/pulp-ci-key.pem --name=rhel5-unittest-runner --site=$SITE -s \
+            --resources_file=rhel5.json --topology=pulp_packaging/ci/config/rhel5
+            
+            TR_STATUS=$?
+            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Provisioning\nSTATUS: $TR_STATUS"; exit 1; fi
+
+            files=$(ls $WORKSPACE/*.slave 2>/dev/null)
+            if [ -e "$files" ]
+            then
+                cat $WORKSPACE/*.slave >> $WORKSPACE/RESOURCES.txt
+            fi
+
+        - inject:
+            properties-file: $WORKSPACE/RESOURCES.txt
+
+    publishers:
+      - archive:
+          artifacts: '*.txt, *.json'
+          allow-empty: 'true'
+      - trigger-parameterized-builds:
+          - project: 'rhel5-unittest-2-runtest'
+            current-parameters: true
+            condition: 'SUCCESS'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+          - project: 'rhel5-unittest-3-teardown'
+            current-parameters: true
+            condition: 'UNSTABLE_OR_WORSE'
+            property-file: $WORKSPACE/RESOURCES.txt
+            fail-on-missing: true
+      - default-ci-workflow-publishers
+
+
+- job:
+    name: 'rhel5-unittest-2-runtest'
+    defaults: ci-workflow-runtest
+    node: 'rhel5-unittest-master'
+    builders:
+        - copyartifact:
+            project: 'rhel5-unittest-1-provision'
+            filter: '*.txt, *.json'
+            target: $WORKSPACE
+
+        - shell: |
+            #!/bin/bash
+            env
+            cp $QEOS_CONFIG_ZIP/config/keys/pulp-ci-key.pem $WORKSPACE/
+            chmod 600 pulp-ci-key.pem
+            
+            # Rather than shove all the environment variables onto the remote
+            # machine, just clone the repos here and scp them
+            #
+            # TODO Either configure ssh on the remote machine to accept environment
+            # variables, or figure out why scp won't work even though ssh will with
+            # the given key.
+            git clone $PULP_GIT_REPOSITORY
+            pushd pulp
+            git checkout $PULP_GIT_PULP_BRANCH
+            popd
+            scp -i $WORKSPACE/pulp-ci-key.pem -r pulp cloud_user@$EXISTING_NODES:~/
+
+            git clone $PULP_RPM_GIT_REPOSITORY
+            pushd pulp_rpm
+            git checkout $PULP_GIT_PULP_RPM_BRANCH
+            popd
+            scp -i $WORKSPACE/pulp-ci-key.pem -r pulp_rpm cloud_user@$EXISTING_NODES:~/
+
+            git clone $PULP_PUPPET_GIT_REPOSITORY
+            pushd pulp_puppet
+            git checkout $PULP_GIT_PULP_PUPPET_BRANCH
+            popd
+            scp -i $WORKSPACE/pulp-ci-key.pem -r pulp_puppet cloud_user@$EXISTING_NODES:~/
+
+            git clone $NECTAR_GIT_REPOSITORY
+            pushd nectar
+            git checkout $PULP_GIT_PULP_NECTAR_BRANCH
+            popd
+            scp -i $WORKSPACE/pulp-ci-key.pem -r nectar cloud_user@$EXISTING_NODES:~/
+
+            git clone $GOFER_GIT_REPOSITORY
+            pushd gofer
+            git checkout $PULP_GIT_GOFER_BRANCH
+            popd
+            scp -i $WORKSPACE/pulp-ci-key.pem -r gofer cloud_user@$EXISTING_NODES:~/
+
+            ssh -t -t -i pulp-ci-key.pem cloud-user@$EXISTING_NODES '
+            sudo yum -y install git tito rpm-build python-lxml python-paste python-nose python-coverage
+            sudo pip install mock==0.8.0
+
+            echo "Setting up after source control extract"
+            OS_NAME=$(lsb_release -si)
+            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
+            set -x
+            sudo curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
+            sudo yum -y install @pulp-admin @pulp-consumer
+            sudo yum -y remove pulp-\* python-pulp\*
+            rm -rf test
+            mkdir test
+            rm -rf coverage
+            mkdir -p coverage
+            sudo bash pulp/playpen/ci/setup.sh
+
+            pushd pulp
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml
+            popd
+
+            pushd pulp_rpm
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_rpm_test.xml
+            popd
+
+            pushd pulp_puppet
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_puppet_test.xml
+            popd
+            '
+    publishers:
+      # Publish a pretty graph of the test results
+      - junit:
+          results: 'test/*.xml'
+          keep-long-stdio: true
+          test-stability: true
+      # Archive the test results
+      - archive:
+          artifacts: 'test/**'
+          allow-empty: 'true'
+      # Tear down all the instances that were provisioned
+      - trigger-parameterized-builds:
+          - project: 'rhel5-unittest-3-teardown'
+            current-parameters: true
+      - default-ci-workflow-publishers
+
+- job:
+    name: 'rhel5-unittest-3-teardown'
+    defaults: ci-workflow-provision
+    node: master
+    builders:
+        - shell: |
+            #!/bin/bash
+            # Give it some time for the previous jenkins job to clean up so the teardown will complete properly
+            cp -v -R $QEOS_CONFIG_ZIP/config/* $WORKSPACE/pulp_packaging/ci/config
+            echo 'sleeping for 1 minute so that previous job can clean up'
+            sleep 60
+
+            $WORKSPACE/ci-ops-central/bootstrap/teardown_resources.sh --site=$SITE --project_defaults=pulp_packaging/ci/config/project_defaults --topology=pulp_packaging/ci/config/rhel5 --name=$LABEL
+
+            $WORKSPACE/ci-ops-central/bootstrap/teardown_jslave.sh --site=$SITE \
+            --project_defaults=pulp_packaging/ci/config/project_defaults \
+            --jslavename=ci-ops-central/project/config/aio_jslave --jslavename=$JSLAVENAME \
+            --jslaveusername=root --ssh_keyfile=pulp_packaging/ci/config/keys/pulp-ci-key.pem \
+            --jslaveip=$JSLAVEIP --jslaveteardown --topology=pulp_packaging/ci/config/rhel7
+
+            TR_STATUS=$?
+            if [ "$TR_STATUS" != 0 ]; then echo "ERROR: Teardown\nSTATUS: $TR_STATUS"; exit 1; fi
+
+
+# All the unit test jobs except for RHEL5
 - job-group:
     name: 'unittest-jobs'
     jobs:
@@ -234,12 +472,14 @@
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
      - 'unittest-jobs'
+     - 'rhel5-unittest-1-provision'
+     - 'rhel5-unittest-2-runtest'
+     - 'rhel5-unittest-3-teardown'
     topology_path:
      - pulp_packaging/ci/config
     topology:
      - fc19
      - fc20
-#     - rhel5
      - rhel6
      - rhel7
     jslavename:

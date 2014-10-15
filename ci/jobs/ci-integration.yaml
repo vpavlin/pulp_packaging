@@ -1,5 +1,5 @@
 - job-template:
-    name: '{project}-{platform}-1-provision'
+    name: '{platform}-{project}-1-provision'
     defaults: ci-workflow-provision
     node: master
     parameters:
@@ -53,12 +53,12 @@
           artifacts: '*.txt, *.json'
           allow-empty: 'true'
       - trigger-parameterized-builds:
-          - project: '{project}-{platform}-2-runtest'
+          - project: '{platform}-{project}-2-runtest'
             current-parameters: true
             condition: 'SUCCESS'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-          - project: '{project}-{platform}-3-teardown'
+          - project: '{platform}-{project}-3-teardown'
             current-parameters: true
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
@@ -67,12 +67,12 @@
 
 
 - job-template:
-    name: '{project}-{platform}-2-runtest'
+    name: '{platform}-{project}-2-runtest'
     defaults: ci-workflow-runtest
     node: '{jslavename}-{platform}'
     builders:
         - copyartifact:
-            project: '{project}-{platform}-1-provision'
+            project: '{platform}-{project}-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
@@ -118,12 +118,12 @@
           allow-empty: 'true'
       # Tear down all the instances that were provisioned
       - trigger-parameterized-builds:
-          - project: '{project}-{platform}-3-teardown'
+          - project: '{platform}-{project}-3-teardown'
             current-parameters: true
       - default-ci-workflow-publishers
 
 - job-template:
-    name: '{project}-{platform}-3-teardown'
+    name: '{platform}-{project}-3-teardown'
     defaults: ci-workflow-provision
     node: master
     builders:
@@ -146,14 +146,14 @@
 - job-group:
     name: '{platform}-integration-tests'
     jobs:
-      - '{project}-{platform}-1-provision'
-      - '{project}-{platform}-2-runtest'
-      - '{project}-{platform}-3-teardown'
+      - '{platform}-{project}-1-provision'
+      - '{platform}-{project}-2-runtest'
+      - '{platform}-{project}-3-teardown'
 
 - project:
     name: integration-jobs
     project:
-     - workflow
+     - integration
     project_defaults:
      - pulp_packaging/ci/config/project_defaults
     topology_path:
@@ -161,11 +161,12 @@
     topology:
      - integration-rhel6
     platform:
-#      - el5
-      - el6
-#      - el7
-#      - fc19
-#      - fc20
+      - el5
+      - el6.5
+      - el6.6
+      - el7
+      - fc19
+      - fc20
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
@@ -173,7 +174,7 @@
     jslavename:
      - 'jslave-integration-slave'
     jslave_execs:
-     - 10
+     - 4
     jslaveimage:
      - rhel-x86_64-7.0-20140915-jenkins
     jslaveflavor:

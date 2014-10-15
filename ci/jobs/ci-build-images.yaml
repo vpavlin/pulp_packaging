@@ -75,7 +75,7 @@
             basedir: pulp
     builders:
         - copyartifact:
-            project: 'build-repo-1-provision'
+            project: 'build-images-1-provision'
             filter: '*.txt, *.json'
             target: $WORKSPACE
 
@@ -146,7 +146,7 @@
     config_dir:
      - pulp_packaging/ci/config
     topology:
-     - unittest-rhel7
+     - rhel7
     jslavename:
      - 'build-images-slave'
     jslave_execs:
