@@ -41,6 +41,36 @@
             description: |
                 The respository URL to use for the Pulp Puppet plugin
         - string:
+            name: PULP_OPENSTACK_GIT_BRANCH
+            default: master
+            description: |
+                The branch name to use for the Pulp Openstack plugin
+        - string:
+            name: PULP_OPENSTACK_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp_openstack.git'
+            description: |
+                The repository URL to use for the Pulp Openstack plugin
+        - string:
+            name: PULP_DOCKER_GIT_BRANCH
+            default: master
+            description: |
+                The branch name to use for the Pulp Docker plugin
+        - string:
+            name: PULP_DOCKER_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp_docker.git'
+            description: |
+                The repository URL to use for the Pulp Docker plugin
+        - string:
+            name: PULP_OSTREE_GIT_BRANCH
+            default: master
+            description: |
+                The branch name to use for the Pulp OSTree plugin
+        - string:
+            name: PULP_OSTREE_GIT_REPOSITORY
+            default: 'https://github.com/pulp/pulp_ostree.git'
+            description: |
+                The repository URL to use for the Pulp OSTree plugin
+        - string:
             name: PULP_GIT_NECTAR_BRANCH
             default: master
             description: |
@@ -103,7 +133,6 @@
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-      - default-ci-workflow-publishers
 
 
 - job-template:
@@ -128,6 +157,24 @@
             branches:
                 - origin/$PULP_GIT_PULP_PUPPET_BRANCH
             basedir: pulp_puppet
+            skip-tag: True
+        - git:
+            url: $PULP_OPENSTACK_GIT_REPOSITORY
+            branches:
+                - origin/$PULP_OPENSTACK_GIT_BRANCH
+            basedir: pulp_openstack
+            skip-tag: True
+        - git:
+            url: $PULP_DOCKER_GIT_REPOSITORY
+            branches:
+                - origin/$PULP_DOCKER_GIT_BRANCH
+            basedir: pulp_docker
+            skip-tag: True
+        - git:
+            url: $PULP_OSTREE_GIT_REPOSITORY
+            branches:
+                - origin/$PULP_OSTREE_GIT_BRANCH
+            basedir: pulp_ostree
             skip-tag: True
         - git:
             url: $NECTAR_GIT_REPOSITORY
@@ -160,7 +207,7 @@
             sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
             set -x
 
-            yum -y install python-mock tito rpm-build python-lxml python-paste
+            yum -y install python-mock tito rpm-build python-lxml python-paste python-qpid python-qpid-qmf
             sudo pip install coverage nose nosexcover --upgrade
 
             # TODO Enable testing/beta
@@ -185,7 +232,6 @@
             chown -R pulp:pulp $WORKSPACE
 
             bash $WORKSPACE/pulp/playpen/ci/setup.sh
-            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
 
             pushd pulp
             sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
@@ -197,6 +243,18 @@
 
             pushd pulp_puppet
             sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_puppet_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_puppet_coverage.xml
+            popd
+            
+            pushd pulp_openstack
+            sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_openstack_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_openstack_coverage.xml
+            popd
+
+            pushd pulp_docker
+            sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_docker_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_docker_coverage.xml
+            popd
+
+            pushd pulp_ostree
+            sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_ostree_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_ostree_coverage.xml
             popd
 
     publishers:
@@ -221,7 +279,6 @@
       - trigger-parameterized-builds:
           - project: '{topology}-unittest-3-teardown'
             current-parameters: true
-      - default-ci-workflow-publishers
 
 - job-template:
     name: '{topology}-unittest-3-teardown'
@@ -357,7 +414,6 @@
             condition: 'UNSTABLE_OR_WORSE'
             property-file: $WORKSPACE/RESOURCES.txt
             fail-on-missing: true
-      - default-ci-workflow-publishers
 
 
 - job:
@@ -454,7 +510,6 @@
       - trigger-parameterized-builds:
           - project: 'rhel5-unittest-3-teardown'
             current-parameters: true
-      - default-ci-workflow-publishers
 
 - job:
     name: 'rhel5-unittest-3-teardown'

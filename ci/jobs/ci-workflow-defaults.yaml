@@ -3,7 +3,7 @@
     defaults: ci-base-defaults
     description: |
         Managed by Jenkins Job Builder. Do not edit via web.
-    concurrent: true
+    concurrent: false
     logrotate:
         daysToKeep: 3
         numToKeep: 10
@@ -31,7 +31,7 @@
     name: ci-workflow-runtest
     description: |
         Managed by Jenkins Job Builder. Do not edit via web.
-    concurrent: true
+    concurrent: false
     logrotate:
         daysToKeep: 3
         numToKeep: 10
