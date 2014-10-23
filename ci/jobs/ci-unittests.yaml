@@ -543,7 +543,7 @@
       - '{topology}-unittest-2-runtest'
       - '{topology}-unittest-3-teardown'
 - project:
-    name: unit-tests
+    name: unit-tests-old
     project:
      - workflow
     project_defaults:
@@ -572,4 +572,165 @@
      - root
     jslaveteardown:
      - True
+
+
+- parameter:
+    name: plugin-unittest-parameters
+    parameters:
+        - string:
+            name: PULP_GIT_PULP_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp platform to run the unit tests against.
+        - string:
+            name: PULP_GIT_PULP_REPOSITORY
+            default: 'https://github.com/pulp/pulp.git'
+            description: |
+                The Git repository to use when pulling the branch.
+        - string:
+            name: PULP_GIT_PLUGIN_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp RPM plugin to run the unit tests against.
+        - string:
+            name: PULP_GIT_PULP_PLUGIN_REPOSITORY_BASE
+            default: 'https://github.com/pulp'
+            description: |
+                The url for the git project to use repository to use when pulling the branch.
+        - string:
+            name: PULP_GIT_NECTAR_BRANCH
+            default: master
+            description: |
+                The branch of nectar to run the unit tests against.
+        - string:
+            name: PULP_GIT_GOFER_BRANCH
+            default: master
+            description: |
+                The branch of gofer to run the unit tests against.
+
+- job-template:
+    name: 'unittest-{pulp_plugin}'
+    project-type: matrix
+    node: 'master'
+    axes:
+      - axis:
+          type: label-expression
+          name: node-type
+          values:
+            - f19-unittest
+            - f20-unittest
+            # - rhel5-unittest
+            - rhel6-unittest
+            - rhel7-unittest
+    parameters:
+        - plugin-unittest-parameters
+    scm:
+        - git:
+            url: $PULP_GIT_PULP_REPOSITORY
+            branches:
+                - origin/$PULP_GIT_PULP_BRANCH
+            basedir: pulp
+            skip-tag: True
+        - git:
+            url: $PULP_GIT_PULP_PLUGIN_REPOSITORY_BASE/{pulp_plugin}.git
+            branches:
+                - origin/$PULP_GIT_PLUGIN_BRANCH
+            basedir: '{pulp_plugin}'
+            skip-tag: True
+        - git:
+            url: 'https://github.com/pulp/nectar.git'
+            branches:
+                - origin/$PULP_GIT_NECTAR_BRANCH
+            basedir: nectar
+            skip-tag: True
+        - git:
+            url: 'https://github.com/jortel/gofer.git'
+            branches:
+                - origin/$PULP_GIT_GOFER_BRANCH
+            basedir: gofer
+            skip-tag: True
+    wrappers:
+      - jclouds:
+          single-use: True
+    builders:
+        - shell: |
+            #!/bin/bash
+            echo "Setting up after source control extract"
+            env
+            OS_NAME=$(lsb_release -si)
+            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
+            setenforce 0
+            cd $WORKSPACE
+
+            # Turn on tty for sudo I moved this to the instance configuration
+            # sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
+            set -x
+
+            sudo yum -y install python-mock tito rpm-build python-lxml python-paste
+            sudo pip install coverage nose nosexcover --upgrade
+
+            # TODO Enable testing/beta
+            if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
+                sudo curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
+            else
+                sudo curl -o /etc/yum.repos.d/fedora-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/fedora-pulp.repo
+            fi
+
+            sudo yum -y install @pulp-server @pulp-admin @pulp-consumer
+            sudo yum -y remove pulp-\* python-pulp\*
+
+            service mongod restart
+            service qpidd restart
+
+            rm -rf $WORKSPACE/test
+            mkdir -p $WORKSPACE/test
+            rm -rf $WORKSPACE/coverage
+            mkdir -p $WORKSPACE/coverage
+
+            # sudo useradd pulp
+            # sudo chown -R pulp:pulp $WORKSPACE
+
+            bash $WORKSPACE/pulp/playpen/ci/setup.sh
+            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
+
+            # cd $WORKSPACE/pulp
+            # sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
+            cd $WORKSPACE/{pulp_plugin}
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
+
+    publishers:
+      - cobertura:
+          report-file: 'coverage/*.xml'
+          fail-no-reports: true
+          targets:
+            - lines:
+                healthy: 80.0
+                unhealthy: 0.0
+                failing: 0.0
+      # Publish a pretty graph of the test results
+      - junit:
+          results: 'test/*.xml'
+          keep-long-stdio: true
+          test-stability: true
+      # Archive the test results
+      - archive:
+          artifacts: 'test/**'
+          allow-empty: 'true'
+
+
+- job-group:
+    name: 'unittest-jobs'
+    jobs:
+      - 'unittest-{pulp_plugin}'
+
+- project:
+    name: unit-tests
+    jobs:
+     - 'unittest-jobs'
+    pulp_plugin:
+     - pulp_rpm
+#     - pulp_puppet
+#     - pulp_docker
+#     - pulp_ostree
+#     - pulp_deb
 
