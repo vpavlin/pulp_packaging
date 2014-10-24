@@ -537,7 +537,7 @@
 
 # All the unit test jobs except for RHEL5
 - job-group:
-    name: 'unittest-jobs'
+    name: 'unittest-ci-jobs'
     jobs:
       - '{topology}-unittest-1-provision'
       - '{topology}-unittest-2-runtest'
@@ -553,7 +553,7 @@
     ssh_keyfile:
      - pulp_packaging/ci/config/keys/pulp-ci-key.pem
     jobs:
-     - 'unittest-jobs'
+     - 'unittest-ci-jobs'
      - 'rhel5-unittest-1-provision'
      - 'rhel5-unittest-2-runtest'
      - 'rhel5-unittest-3-teardown'
@@ -572,7 +572,6 @@
      - root
     jslaveteardown:
      - True
-
 
 - parameter:
     name: plugin-unittest-parameters
@@ -607,6 +606,48 @@
             default: master
             description: |
                 The branch of gofer to run the unit tests against.
+
+- builder:
+    name: setup-pulp
+    builders:
+      - shell: |
+            #!/bin/bash
+            echo "Setting up after source control extract"
+            env
+            OS_NAME=$(lsb_release -si)
+            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
+            setenforce 0
+            cd $WORKSPACE
+
+            # Turn on tty for sudo I moved this to the instance configuration
+            # sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
+            set -x
+
+            sudo yum -y install python-mock tito rpm-build python-lxml python-paste
+            sudo pip install coverage nose nosexcover --upgrade
+
+            # TODO Enable testing/beta
+            if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
+                sudo curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
+            else
+                sudo curl -o /etc/yum.repos.d/fedora-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/fedora-pulp.repo
+            fi
+
+            sudo yum -y install @pulp-server @pulp-admin @pulp-consumer
+            sudo yum -y remove pulp-\* python-pulp\*
+
+            service mongod restart
+            service qpidd restart
+
+            rm -rf $WORKSPACE/test
+            mkdir -p $WORKSPACE/test
+            rm -rf $WORKSPACE/coverage
+            mkdir -p $WORKSPACE/coverage
+
+            # sudo useradd pulp
+            # sudo chown -R pulp:pulp $WORKSPACE
+
+            bash $WORKSPACE/pulp/playpen/ci/setup.sh
 
 - job-template:
     name: 'unittest-{pulp_plugin}'
@@ -653,48 +694,26 @@
       - jclouds:
           single-use: True
     builders:
+        - setup-pulp
         - shell: |
             #!/bin/bash
-            echo "Setting up after source control extract"
-            env
-            OS_NAME=$(lsb_release -si)
-            OS_VERSION=$(lsb_release -sr | cut -f1 -d.)
-            setenforce 0
-            cd $WORKSPACE
+            echo "Setting up the plugin"
 
-            # Turn on tty for sudo I moved this to the instance configuration
-            # sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
-            set -x
+            cd $WORKSPACE/{pulp_plugin}
+            for setup in `find . -name setup.py`; do
+                pushd `dirname $setup`;
+                sudo python setup.py develop;
+                popd;
+            done;
+            sudo python ./pulp-dev.py -I
 
-            sudo yum -y install python-mock tito rpm-build python-lxml python-paste
-            sudo pip install coverage nose nosexcover --upgrade
 
-            # TODO Enable testing/beta
-            if [ "$OS_NAME" == "RedHatEnterpriseServer" ]; then
-                sudo curl -o /etc/yum.repos.d/rhel-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/rhel-pulp.repo
-            else
-                sudo curl -o /etc/yum.repos.d/fedora-pulp.repo https://repos.fedorapeople.org/repos/pulp/pulp/fedora-pulp.repo
-            fi
+            echo "Running core pulp tests"
+            # Running the core tests should be an independent job
+            cd $WORKSPACE/pulp
+            python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
 
-            sudo yum -y install @pulp-server @pulp-admin @pulp-consumer
-            sudo yum -y remove pulp-\* python-pulp\*
-
-            service mongod restart
-            service qpidd restart
-
-            rm -rf $WORKSPACE/test
-            mkdir -p $WORKSPACE/test
-            rm -rf $WORKSPACE/coverage
-            mkdir -p $WORKSPACE/coverage
-
-            # sudo useradd pulp
-            # sudo chown -R pulp:pulp $WORKSPACE
-
-            bash $WORKSPACE/pulp/playpen/ci/setup.sh
-            # bash -ex $WORKSPACE/pulp/playpen/ci/run_tests.sh
-
-            # cd $WORKSPACE/pulp
-            # sudo -u pulp python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
+            echo "Running plugin tests"
             cd $WORKSPACE/{pulp_plugin}
             python ./run-tests.py -v --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
 
@@ -704,7 +723,7 @@
           fail-no-reports: true
           targets:
             - lines:
-                healthy: 80.0
+                healthy: {min_coverage}
                 unhealthy: 0.0
                 failing: 0.0
       # Publish a pretty graph of the test results
@@ -717,7 +736,6 @@
           artifacts: 'test/**'
           allow-empty: 'true'
 
-
 - job-group:
     name: 'unittest-jobs'
     jobs:
@@ -728,9 +746,16 @@
     jobs:
      - 'unittest-jobs'
     pulp_plugin:
-     - pulp_rpm
-#     - pulp_puppet
-#     - pulp_docker
-#     - pulp_ostree
-#     - pulp_deb
+     - pulp_rpm:
+        min_coverage: 87.0
+#     - pulp_puppet:
+#        min_coverage: 80.0
+#     - pulp_docker:
+#        min_coverage: 100.0
+#     - pulp_ostree:
+#        min_coverage: 100.0
+#     - pulp_deb:
+#        min_coverage: 100.0
 
+# TODO get rhel5 working for the unittest-jobs
+# After those two are done, delete the previous setup-test-teardown jobs
