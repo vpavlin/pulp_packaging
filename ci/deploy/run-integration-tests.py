@@ -8,7 +8,7 @@ from fabric.api import get, run, settings
 from utils import config_utils, setup_utils
 
 # The nosetests command to run the integration tests
-NOSETESTS_COMMAND = 'cd pulp-automation && nosetests -vs --with-xunit --nologcapture'
+NOSETESTS_COMMAND = 'cd pulp-automation && nosetests -vs --with-xunit -x'
 
 # Setup the CLI
 description = 'Run integration tests using a deployed environment by deploy-environment.py'
