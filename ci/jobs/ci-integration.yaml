@@ -197,8 +197,8 @@
           values:
 #            - el5
 #            - el6.5
-            - el6.6
-#            - el7
+#            - el6.6
+            - el7
 #            - fc19
 #            - fc20
       - axis:
