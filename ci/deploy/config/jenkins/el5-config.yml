@@ -16,7 +16,7 @@ structure:
     instance_name: jenkins-el6-pulp-server
     role: server
     flavor: m1.medium
-    distribution: el6
+    distribution: el6.6
     children:
         - instance_name: jenkins-el5-pulp-consumer
           distribution: el5
