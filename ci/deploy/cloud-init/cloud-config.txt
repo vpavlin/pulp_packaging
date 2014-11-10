@@ -1,12 +1,2 @@
 #cloud-config
 preserve_hostname: true
-
-users:
-    - name: cloud-user
-      groups: wheel
-      sudo: ALL=(ALL) NOPASSWD:ALL
-      lock-passwd: false
-    - name: fedora
-      groups: wheel
-      sudo: ALL=(ALL) NOPASSWD:ALL
-      lock-passwd: false
