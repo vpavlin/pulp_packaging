@@ -22,7 +22,7 @@ config = config_utils.load_config(args.config)
 flattened_config = config_utils.flatten_structure(config)
 tester_config = filter(lambda conf: conf[setup_utils.ROLE] == setup_utils.PULP_TESTER_ROLE, flattened_config)[0]
 
-with settings(host_string=tester_config[setup_utils.HOST_STRING], key_file=tester_config[setup_utils.PRIVATE_KEY]):
+with settings(host_string=tester_config[setup_utils.HOST_STRING], key_filename=tester_config[setup_utils.PRIVATE_KEY]):
     test_result = run(NOSETESTS_COMMAND, warn_only=True)
     get('pulp-automation/nosetests.xml', args.tests_destination or tester_config['tests_destination'])
 
