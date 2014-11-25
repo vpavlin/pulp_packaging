@@ -1,5 +1,5 @@
 - parameter:
-    name: plugin-unittest-parameters
+    name: pulp-unittest-parameters
     parameters:
         - string:
             name: PULP_GIT_PULP_BRANCH
@@ -12,16 +12,6 @@
             description: |
                 The Git repository to use when pulling the branch.
         - string:
-            name: PULP_GIT_PLUGIN_BRANCH
-            default: master
-            description: |
-                The branch of the Pulp RPM plugin to run the unit tests against.
-        - string:
-            name: PULP_GIT_PULP_PLUGIN_REPOSITORY_BASE
-            default: 'https://github.com/pulp'
-            description: |
-                The url for the git project to use repository to use when pulling the branch.
-        - string:
             name: PULP_GIT_NECTAR_BRANCH
             default: master
             description: |
@@ -31,6 +21,22 @@
             default: master
             description: |
                 The branch of gofer to run the unit tests against.
+        - matrix-combinations:
+            name: MATRIX_AXIS
+
+- parameter:
+    name: plugin-unittest-parameters
+    parameters:
+        - string:
+            name: PULP_GIT_PLUGIN_BRANCH
+            default: master
+            description: |
+                The branch of the Pulp plugin to run the unit tests against.
+        - string:
+            name: PULP_GIT_PULP_PLUGIN_REPOSITORY_BASE
+            default: 'https://github.com/pulp'
+            description: |
+                The url for the git project to use repository to use when pulling the branch.
 
 - builder:
     name: setup-pulp
@@ -48,13 +54,14 @@
             # sed -i 's|Defaults[ ]*requiretty|#Defaults    requiretty|g' /etc/sudoers
             set -x
 
-            sudo yum -y install python-mock tito rpm-build python-lxml python-paste
+            sudo yum -y install python-ctypes python-argparse
             if [ "$OS_NAME" == "RedHatEnterpriseServer" ] && [ "$OS_VERSION" == "5" ]; then
+              sudo pip install mock
               sudo yum -y install python-nose
-              sudo pip install mock flake8
               sudo pip install coverage==3.7
               sudo pip install nosexcover==1.0.8
             else
+              sudo yum -y install  tito rpm-build python-mock  python-paste  python-lxml
               sudo pip install coverage nose nosexcover flake8 --upgrade
             fi
 
@@ -66,7 +73,7 @@
             fi
 
             sudo yum -y install @pulp-server @pulp-admin @pulp-consumer
-            sudo yum -y remove pulp-\* python-pulp\*
+            sudo yum -y remove pulp-\* python-pulp\* gofer python-gofer
 
             service mongod restart
             service qpidd restart
@@ -94,8 +101,8 @@
                   popd;
               done;
             fi
-            echo "Setting up gopher"
-            cd $WORKSPACE/gopher
+            echo "Setting up gofer"
+            cd $WORKSPACE/gofer
             for setup in `find . -name setup.py`; do
                 pushd `dirname $setup`;
                 sudo python setup.py develop;
@@ -110,6 +117,75 @@
             done;
             sudo python ./pulp-dev.py -I
 
+- job:
+    name: 'unittest-pulp'
+    project-type: matrix
+    node: 'master'
+    axes:
+      - axis:
+          type: label-expression
+          name: node-type
+          values:
+            - f19-unittest
+            - f20-unittest
+            - rhel5-unittest
+            - rhel6-unittest
+            - rhel7-unittest
+    parameters:
+        - pulp-unittest-parameters
+    scm:
+        - git:
+            url: $PULP_GIT_PULP_REPOSITORY
+            branches:
+                - origin/$PULP_GIT_PULP_BRANCH
+            basedir: pulp
+            skip-tag: True
+        - git:
+            url: 'https://github.com/pulp/nectar.git'
+            branches:
+                - origin/$PULP_GIT_NECTAR_BRANCH
+            basedir: nectar
+            skip-tag: True
+        - git:
+            url: 'https://github.com/jortel/gofer.git'
+            branches:
+                - origin/$PULP_GIT_GOFER_BRANCH
+            basedir: gofer
+            skip-tag: True
+    wrappers:
+      - jclouds:
+          single-use: True
+    builders:
+        - setup-pulp
+        - shell: |
+            #!/bin/bash
+            echo "Running core pulp tests"
+            # Running the core tests should be an independent job
+            cd $WORKSPACE/pulp
+            export PYTHONUNBUFFERED=1
+            set -x
+            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
+
+    publishers:
+      - cobertura:
+          report-file: 'coverage/*.xml'
+          fail-no-reports: true
+          targets:
+            - lines:
+                healthy: 84
+                unhealthy: 0.0
+                failing: 0.0
+      # Publish a pretty graph of the test results
+      - junit:
+          results: 'test/*.xml'
+          keep-long-stdio: true
+          test-stability: true
+      # Archive the test results
+      - archive:
+          artifacts: 'test/**'
+          allow-empty: 'true'
+
+
 - job-template:
     name: 'unittest-{pulp_plugin}'
     project-type: matrix
@@ -120,6 +196,7 @@
           name: node-type
           values: '{obj:unittest_platforms}'
     parameters:
+        - pulp-unittest-parameters
         - plugin-unittest-parameters
     scm:
         - git:
@@ -163,13 +240,10 @@
             done;
             sudo python ./pulp-dev.py -I
 
-            echo "Running core pulp tests"
-            # Running the core tests should be an independent job
-            cd $WORKSPACE/pulp
-            python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
-
             echo "Running plugin tests"
             cd $WORKSPACE/{pulp_plugin}
+            export PYTHONUNBUFFERED=1
+            set -x
             python ./run-tests.py --enable-coverage --with-xunit --xunit-file ../test/pulp_test.xml --with-xcoverage --xcoverage-file ../coverage/pulp_coverage.xml
 
     publishers:
